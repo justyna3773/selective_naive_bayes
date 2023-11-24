@@ -5,8 +5,9 @@ import math
 import pandas as pd
 from sklearn.metrics import normalized_mutual_info_score
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
-def preprocess_dataset(df, target_col, columns_to_bin=None, columns_to_encode=None):
+def preprocess_dataset(df, target_col, columns_to_bin=None, columns_to_encode=None, duplicates_drop_cols=None):
     """    encodes values, uses 5bin discretization
     1. Load from .csv file
     2. Apply binning
@@ -17,13 +18,18 @@ def preprocess_dataset(df, target_col, columns_to_bin=None, columns_to_encode=No
     encodings_2 = dict()
     if columns_to_bin:
         for col in columns_to_bin:
-            qc = pd.qcut(df[col], q=5)
+            print(col)
+            if col in duplicates_drop_cols:
+                qc = pd.qcut(df[col], q=5, duplicates='drop')
+            else: 
+                qc = pd.qcut(df[col], q=5)
             # create bin encodings
             bin_encodings = {k:v for v, k in enumerate(qc.unique())}
             encodings[col] = bin_encodings
             df[col] = df[col].map(bin_encodings)
     if columns_to_encode:
         for col in columns_to_encode:
+            print(col)
             encodings_2 = {k:v for v, k in enumerate(df[col].unique())}
             df[col] = df[col].map(encodings_2)
     # unify nan values representation
@@ -142,6 +148,7 @@ class Selective_NB_classifier():
         attr_mi = dict()
         for i, attr in enumerate(self.dataset.columns[:-1]):
             #attr_mi[attr] = mutual_information(self.dataset[attr].tolist(), self.dataset[self.target_col].tolist(), i, self.unique_targets, self.freq_table)
+            print(attr)
             attr_mi[attr] = normalized_mutual_info_score(self.dataset[attr].tolist(), self.dataset[self.target_col].tolist())      
         self.attr_mi = attr_mi
     
@@ -214,9 +221,9 @@ class Selective_NB_classifier():
         """
         performs leave-one-out crossvalidation to accumulate errors in self.rmse_dict and chooses the best model
         """
-        for ind, example in self.dataset.iterrows():
+        for ind, example in tqdm(self.dataset.iterrows()):
             #iterating over examples and updating rmse_dict
-            print(f'Instance {ind}')
+            #print(f'Instance {ind}')
             models_dict, self.rmse_dict = self.predict_using_all_models(example)
             # print(f'Instance: {ind}')
             # print(models_dict)
