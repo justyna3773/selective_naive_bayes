@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.metrics import normalized_mutual_info_score
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
+from sklearn.metrics import roc_auc_score
 
 def preprocess_dataset(df, target_col, columns_to_bin=None, columns_to_encode=None, duplicates_drop_cols=None):
     """    encodes values, uses 5bin discretization
@@ -142,7 +143,8 @@ class Selective_NB_classifier():
         self.attr_mapping = {k:v for v, k in enumerate(self.dataset.columns[:-1])} # initial attribute names to indexes mapping
         self.attr_mapping_reverse = {v:k for v, k in enumerate(self.dataset.columns[:-1])} # reverse: indexes to attribute names mapping
         self.target_col = target_col
-        self.rmse_dict = defaultdict(lambda: []) # dictionary of model versions (key is a tuple of model attrs) and the list of RMSE values for instaces
+        self.rmse_dict = defaultdict(lambda: [])
+        self.predictions = defaultdict(lambda: []) # dictionary of model versions (key is a tuple of model attrs) and the list of RMSE values for instaces
     
     def calculate_mutual_information(self):
         attr_mi = dict()
@@ -167,6 +169,7 @@ class Selective_NB_classifier():
         predict one example using all models.
         Modifies self.rmse_dict with every new example.
         """
+        
         self.freq_table = remove_inst_from_freq_table(example,self.freq_table) # table with example removed and frequencies updated
         targets_probs = dict() # dictionary with possible
         models_dict = dict()
@@ -210,6 +213,12 @@ class Selective_NB_classifier():
             predictions = {y_c: prob_dict[y_c]/sum_of_probs for y_c in self.unique_targets}
             # calculate the squared error
             squared_err = (1-predictions[y_gold])**2
+
+            if self.zero_one_loss:
+                prediction = max(predictions, key=predictions.get)
+                zero_one_loss = 1 if prediction==y_gold else 0
+                self.predictions[temp_attrs_tuple].append((y_gold, prediction))
+
             accum_squared_error += squared_err
             self.rmse_dict[temp_attrs_tuple].append(accum_squared_error)
         self.freq_table = add_inst_to_freq_table(example, self.freq_table) # add the instance back to frequency table
@@ -217,10 +226,11 @@ class Selective_NB_classifier():
         return models_dict, self.rmse_dict
         # remove instance from frequency table
     
-    def select_best_model(self):
+    def select_best_model(self, zero_one_loss=False):
         """
         performs leave-one-out crossvalidation to accumulate errors in self.rmse_dict and chooses the best model
         """
+        self.zero_one_loss = zero_one_loss
         for ind, example in tqdm(self.dataset.iterrows()):
             #iterating over examples and updating rmse_dict
             #print(f'Instance {ind}')
@@ -230,23 +240,43 @@ class Selective_NB_classifier():
             # print(self.rmse_dict)
         # select best model based on accumulated RMSE
         #print(self.rmse_dict)
+        if self.zero_one_loss:
+            # calculate AUC
+            best_auc = 0
+            best_features = ''
+            for feature_set, predictions in self.predictions.items():
+                auc = np.sum(roc_auc_score([p[0] for p in predictions], [p[1] for p in predictions]))
+                if auc > best_auc:
+                    best_auc = auc
+                    best_features = feature_set
+            print(f'Best model attributes (AUC) {best_features}')
+            print(f'Best AUC {best_auc}')
+            self.best_model_zero_loss = best_features
+
         self.rmse_sum_dict = {key: math.sqrt(sum(rmse)/len(rmse))for key, rmse in self.rmse_dict.items()}
         self.best_model = min(self.rmse_sum_dict, key=self.rmse_sum_dict.get)
         print(self.rmse_sum_dict)
-        print(f'Best model attributes: {self.best_model}')
+        print(f'Best model attributes (RMSE): {self.best_model}')
         # attributes of the best model
         #best freqeuncy table in incorrectly constructed
         self.best_freq_table = dict()
         for attr in self.best_model:
             self.best_freq_table[attr] = self.freq_table[attr]
     
-    def classify(self, example):
+    def classify(self, example, zero_loss=False):
         targets_probs = dict()
         # choose only attributes of example which belong to the best model attributes
         example_prep = dict()
-        for i in self.best_model:
-            example_prep[i] = example[i]
-        assert len(example_prep.keys()) == len(self.best_model)
+        if not zero_loss:
+            for i in self.best_model:
+                example_prep[i] = example[i]
+            assert len(example_prep.keys()) == len(self.best_model)
+
+        else:
+            for i in self.best_model_zero_loss:
+                example_prep[i] = example[i]
+            assert len(example_prep.keys()) == len(self.best_model_zero_loss)
+            
         prior_probs = {y_cat: len(self.dataset[self.dataset[self.target_col]==y_cat])/len(self.dataset) for y_cat in self.unique_targets}
         for y_cat in self.unique_targets:
             joint_prob = 1
