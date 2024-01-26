@@ -1,4 +1,7 @@
+## Selective Naive Bayes
+
 airlines_selective_naive_bayes notebook contains current status of experiments with SNB vs NB for Airlines dataset.
+
 airlines_nb_without_smoothing notebook contains current status of experiments with NB without smoothing on Airlines dataset.
 
 
