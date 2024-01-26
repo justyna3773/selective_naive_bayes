@@ -41,9 +41,13 @@ def preprocess_dataset(df, target_col, columns_to_bin=None, columns_to_encode=No
 def construct_freq_table(dataset):
     """
     constructs freqeuncy table according to the algorithm described in Selective NB paper
+    Assumes the last column as the target column.
     """
-    freq_table = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: 0)))
-    unique_targets =set() # w zagnieżdżonym słowniku klucze to wartości przyjmowane przez cechę
+    freq_table = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: 0))) # nested dictionary where
+    # {"column_name": {"value1": {"target1": count_of_value1_target1, "target2": count_of_value1_target2},
+    # "value2": {"target1": count_of_value2_target1, "target2": count_of_value2_target2}}
+    unique_targets =set() 
+
     for ind, instance in dataset.iterrows():
         #print(instance)
         y = instance[-1]
@@ -56,36 +60,13 @@ def construct_freq_table(dataset):
     return freq_table, unique_targets
 
 
-# class Freq_table():
-#     def __init__(self, dataset):
-#         self.table, self.unique_targets = construct_freq_table(dataset)
-#     def pretty_print(self):
-#         for k in self.table:
-#             print(f'Attribute: {k}')
-#             for a in self.table[k]:
-#                 print(f'Frequencies of value {a}')
-#                 freqs = self.table[k][a]
-#                 for j, m in freqs.items():
-#                     print(f'Class: {j}, number of occurences: {m}')
 
-
-def calc_p_xi_y(i,j,y,freq_table,m=1):
-    try:
-        nominator = freq_table[i][j][y] + m/(len(freq_table[i].keys()))
-    except KeyError:
-        nominator = m/(len(freq_table[i].keys()))
-    # suma wystąpień wszystkich kategorii dla atrybutu i i class y
-    sum_freq_table = 0
-    try:
-        for l in freq_table[i].keys():
-            sum_freq_table += freq_table[i][l][y]
-        denominator = sum_freq_table + m
-    except:
-        denominator = m
-    return nominator/denominator
 
 
 def remove_inst_from_freq_table(example, freq_table):
+    """
+    remove single instance occurence from frequency table
+    """
     y = example[-1]
     for attr_ind, attr_val in enumerate(example[:-1]):
         if freq_table[attr_ind][attr_val][y] >= 1:
@@ -94,48 +75,75 @@ def remove_inst_from_freq_table(example, freq_table):
 
 
 def add_inst_to_freq_table(example, freq_table):
+    """
+    add single instance to frequency table
+    """
     y = example[-1]
     for attr_ind, attr_val in enumerate(example[:-1]):
         if freq_table[attr_ind][attr_val][y] >= 0:
             freq_table[attr_ind][attr_val][y] += 1
     return freq_table
-# def mutual_information(X,y,i, unique_targets, freq_table):
-#     unique_X = set(X)
-#     mi = 0
-#     for targ in unique_targets:
-#         for x in unique_X:
-#             px = X.count(x)/len(y)
-#             py = y.count(targ)/len(y)
-#             pxy = freq_table[i][x][targ]/len(y)
-#             print(px, py, pxy)
-#             if pxy == 0:
-#                 continue
-#             else:
-#                 mi_partial = pxy*math.log((pxy)/(px*py), 2)
-#                 mi += mi_partial
-#     return mi
+
+
 class NB_classifier():
-    def __init__(self, dataset, target_col, verbose=False):
+
+    def __init__(self, dataset, target_col, verbose=False, m=1):
         self.dataset = dataset
         self.freq_table, self.unique_targets = construct_freq_table(self.dataset) 
         self.target_col = target_col
+        self.m = m
+        self.columns = self.dataset.columns
+        self.zero_frequency_stats = {i:0 for (i, j) in enumerate(self.columns)}
         if verbose:
             print(self.freq_table) 
+
+    def calc_p_xi_y(self, i,j,y,m=1):
+        """
+        Calculate conditional probability
+        if m=0 this turns into implementation without Laplacian smoothing
+
+        """
+        try:
+            nominator = self.freq_table[i][j][y] + m/(len(self.freq_table[i].keys()))
+        except KeyError:
+            #nominator = m/(len(freq_table[i].keys()))
+            nominator = 0
+            return 0
+        # suma wystąpień wszystkich kategorii dla atrybutu i i class y
+        sum_freq_table = 0
+        try:
+            for l in self.freq_table[i].keys():
+                sum_freq_table += self.freq_table[i][l][y]
+            denominator = sum_freq_table + m
+        except:
+            denominator = m
+        return nominator/denominator
+
     def classify(self, example):
-        #example to havee the same order as in training examples used to construct frequency matrix
+        #example to have the same order as in training examples used to construct frequency matrix
         targets_probs = dict()
         prior_probs = {y_cat: len(self.dataset[self.dataset[self.target_col]==y_cat]) for y_cat in self.unique_targets}
-        for y_cat in self.unique_targets:
-            joint_prob = 1
-            for i, attr in enumerate(example[:-1]):
-                joint_prob = joint_prob*calc_p_xi_y(i, attr, y_cat, self.freq_table)
-            targets_probs[y_cat] = joint_prob*prior_probs[y_cat]
-        print(targets_probs)
-        return  max(targets_probs, key=targets_probs.get)
+        try:
+            for y_cat in self.unique_targets:
+                joint_prob = 1
+                for i, attr in enumerate(example[:-1]):
+                    joint_prob = joint_prob*self.calc_p_xi_y(i, attr, y_cat, m=self.m)
+                    if joint_prob == 0:
+                        #print(i)
+                        self.zero_frequency_stats[i] += 1
+                targets_probs[y_cat] = joint_prob*prior_probs[y_cat]
+            # normalize the probabilities by the sum of predicted probabilities
+            sum_of_probs = sum(targets_probs.values())
+            predictions = {y_c: targets_probs[y_c]/sum_of_probs for y_c in self.unique_targets}
+        except ZeroDivisionError:
+            predictions = {y_c: targets_probs[y_c] for y_c in self.unique_targets}
+            return  max(predictions, key=predictions.get), max(predictions.values())
+        #print(targets_probs)
+        return  max(predictions, key=predictions.get), max(predictions.values())
     
 
 class Selective_NB_classifier():
-    def __init__(self, dataset, target_col='y'):
+    def __init__(self, dataset, target_col='y', m=1):
         self.dataset = dataset
         self.freq_table, self.unique_targets = construct_freq_table(dataset)
         self.freq_table_original, _ = construct_freq_table(dataset)
@@ -144,7 +152,9 @@ class Selective_NB_classifier():
         self.attr_mapping_reverse = {v:k for v, k in enumerate(self.dataset.columns[:-1])} # reverse: indexes to attribute names mapping
         self.target_col = target_col
         self.rmse_dict = defaultdict(lambda: [])
-        self.predictions = defaultdict(lambda: []) # dictionary of model versions (key is a tuple of model attrs) and the list of RMSE values for instaces
+        self.predictions = defaultdict(lambda: [])
+        self.m = m
+        # dictionary of model versions (key is a tuple of model attrs) and the list of RMSE values for instaces
     
     def calculate_mutual_information(self):
         attr_mi = dict()
@@ -153,6 +163,28 @@ class Selective_NB_classifier():
             print(attr)
             attr_mi[attr] = normalized_mutual_info_score(self.dataset[attr].tolist(), self.dataset[self.target_col].tolist())      
         self.attr_mi = attr_mi
+    
+    def calc_p_xi_y(self, i,j,y,m=1):
+        """
+        Calculate conditional probability
+        if m=0 this turns into implementation without Laplacian smoothing
+
+        """
+        try:
+            nominator = self.freq_table[i][j][y] + m/(len(self.freq_table[i].keys()))
+        except KeyError:
+            #nominator = m/(len(freq_table[i].keys()))
+            nominator = 0
+            return 0
+        # suma wystąpień wszystkich kategorii dla atrybutu i i class y
+        sum_freq_table = 0
+        try:
+            for l in self.freq_table[i].keys():
+                sum_freq_table += self.freq_table[i][l][y]
+            denominator = sum_freq_table + m
+        except:
+            denominator = m
+        return nominator/denominator
     
     def order_by_mi(self):
         """
@@ -201,7 +233,7 @@ class Selective_NB_classifier():
                 py = prior_probs[y_cat]
                 j = example[self.attr_mapping_reverse[attr]] # access attribute value at correct index in the passed example, attr is already mapped to attribute encoding
                 try:
-                    prob_xi_y = calc_p_xi_y(attr,j,y_cat, temp_dict)
+                    prob_xi_y = self.calc_p_xi_y(attr,j,y_cat, m=self.m)
                     prob_dict[y_cat] = prob_dict[y_cat]*prob_xi_y
                 except KeyError:
                     print('Zero probability error!')
@@ -210,7 +242,10 @@ class Selective_NB_classifier():
                     models_dict[temp_attrs_tuple][y_cat] = prob_dict[y_cat]*py
             # normalize the probabilities by the sum of predicted probabilities
             sum_of_probs = sum(prob_dict.values())
-            predictions = {y_c: prob_dict[y_c]/sum_of_probs for y_c in self.unique_targets}
+            try:
+                predictions = {y_c: prob_dict[y_c]/sum_of_probs for y_c in self.unique_targets}
+            except ZeroDivisionError:
+                predictions = {y_c: 0 for y_c in self.unique_targets}
             # calculate the squared error
             squared_err = (1-predictions[y_gold])**2
 
@@ -281,24 +316,13 @@ class Selective_NB_classifier():
         for y_cat in self.unique_targets:
             joint_prob = 1
             for i, attr in example_prep.items():
-                joint_prob = joint_prob*calc_p_xi_y(i, attr, y_cat, self.freq_table)
+                joint_prob = joint_prob*self.calc_p_xi_y(i, attr, y_cat, m=self.m)
             targets_probs[y_cat] = joint_prob*prior_probs[y_cat]
-        # for i, attr in example_prep.items():
-        #     for y_cat in self.unique_targets:
-        #         j = example_prep[i] # access attribute value at correct index in the passed example, attr is already mapped to attribute encoding
-        #         # tutaj cos sie wywala
-        #         #try:
-        #         prob = calc_p_xi_y(i,j,y_cat, self.freq_table)
-        #         # except KeyError:
-        #         #     #print('Zero probability error!')
-        #         #     prob = 0
-        #         #finally:
-        #         targets_probs[y_cat] = targets_probs[y_cat]*prob
-        # #print(targets_probs)
-        # for y_cat in self.unique_targets:
-        #     targets_probs[y_cat] = targets_probs[y_cat]*prior_probs[y_cat]
-        print(f'Predicted class: {max(targets_probs, key=targets_probs.get)}')
-        return max(targets_probs, key=targets_probs.get)
+        # normalize the probabilities by the sum of predicted probabilities
+        sum_of_probs = sum(targets_probs.values())
+        predictions = {y_c: targets_probs[y_c]/sum_of_probs for y_c in self.unique_targets}
+        print(f'Predicted class: {max(predictions, key=predictions.get)}, prob: {predictions.values()}')
+        return max(predictions, key=predictions.get), max(predictions.values())
     
     def describe(self):
         print(f'Model attributes ranked by mutual information: {self.ordered_attrs}')
@@ -364,23 +388,4 @@ def test2():
         gold.append(example['income'])
 
 if __name__ == "__main__":
-    #dataset = [[1,50,1], [0,44,2], [1, 33, 1], [1,22,1], [1, 11, 1]]
-    #dataset = pd.DataFrame(dataset, columns = ['Category', 'Name', 'Target'])
-    # dataset = pd.read_csv('./labor.csv', header=None)
-    # dataset.columns = [f'col_{n}' for n in range(1,17)] + ['target']
-    # #dataset = dataset[]
-    # print("Number of NaN values:")
-    # print(dataset['target'].isnull().sum())
-    # preprocess_dataset(dataset, 'target', columns_to_encode=['target'])
-    # f_table = Freq_table(dataset)
-    # f_table.pretty_print()
-    # print(construct_freq_table(dataset))
-    # snb = Selective_NB_classifier(dataset, target_col='target')
-    # snb.calculate_mutual_information()
-    # snb.order_by_mi()
-    # print(snb.attr_mi)
-    # print(snb.ordered_attrs)
-    # snb.select_best_model()
-    # example = dataset.iloc[0]
-    # snb.predict_using_all_models(example)
     test2()
